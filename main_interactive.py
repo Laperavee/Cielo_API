@@ -1,6 +1,6 @@
 import requests
 import networkx as nx
-import matplotlib.pyplot as plt
+import plotly.graph_objects as go
 import os
 import json
 from selenium import webdriver
@@ -14,9 +14,11 @@ BEARER_TOKEN = None
 HEADERS = {"Authorization": f"Bearer {BEARER_TOKEN}"}
 EDGE_THRESHOLD = 50
 
+
 def save_bearer_token(token):
     with open(TOKEN_FILE_PATH, 'w') as f:
         json.dump({"BEARER_TOKEN": token}, f)
+
 
 def load_bearer_token():
     global BEARER_TOKEN
@@ -26,6 +28,7 @@ def load_bearer_token():
             BEARER_TOKEN = data.get("BEARER_TOKEN")
             HEADERS["Authorization"] = f"Bearer {BEARER_TOKEN}"
     return BEARER_TOKEN
+
 
 def renew_bearer_token():
     global BEARER_TOKEN
@@ -62,6 +65,7 @@ def renew_bearer_token():
     finally:
         driver.quit()
 
+
 def fetch_wallet_data(wallet):
     url = f"https://feed-api.cielo.finance/v1/{wallet}/related-wallets"
     try:
@@ -75,26 +79,32 @@ def fetch_wallet_data(wallet):
             print(f"Erreur: API {response.status_code}, {response.text}")
             return []
         data = response.json()
+        print(f"Connexions pour {wallet}: {data}")
         return data.get("data", {}).get("items", [])
     except Exception as e:
         print(f"Erreur réseau: {e}")
         return []
 
+
 def filter_main_wallet(level_wallets, main_wallet):
     return [wallet for wallet in level_wallets if wallet["wallet"].lower() != main_wallet.lower()]
+
 
 def build_wallet_tree(wallet):
     G = nx.Graph()
     G.add_node(wallet)
+    print(f"Ajout du wallet principal : {wallet}")
 
     level1_wallets = fetch_wallet_data(wallet)
     level1_wallets = filter_main_wallet(level1_wallets, wallet)
 
     for rel in level1_wallets[:7]:
         wallet_n1 = rel["wallet"]
+        inflow_n1 = rel["inflow"]
+        outflow_n1 = rel["outflow"]
         G.add_node(wallet_n1)
-        # Ne pas inclure de poids ici, juste une arête sans poids
-        G.add_edge(wallet, wallet_n1, inflow=rel["inflow"], outflow=rel["outflow"])
+        G.add_edge(wallet, wallet_n1, inflow=inflow_n1, outflow=outflow_n1)
+        print(f"Ajout du wallet de niveau 1 : {wallet_n1} et connexion avec {wallet}")
 
         level2_wallets = fetch_wallet_data(wallet_n1)
         level2_wallets = filter_main_wallet(level2_wallets, wallet)
@@ -103,11 +113,14 @@ def build_wallet_tree(wallet):
             wallet_n2 = rel2["wallet"]
             if wallet_n2 == wallet or wallet_n2 == wallet_n1:
                 continue
+            inflow_n2 = rel2["inflow"]
+            outflow_n2 = rel2["outflow"]
             G.add_node(wallet_n2)
-            # Ajouter une arête sans poids
-            G.add_edge(wallet_n1, wallet_n2, inflow=rel2["inflow"], outflow=rel2["outflow"])
+            G.add_edge(wallet_n1, wallet_n2, inflow=inflow_n2, outflow=outflow_n2)
+            print(f"Ajout du wallet de niveau 2 : {wallet_n2} et connexion avec {wallet_n1}")
 
     return G
+
 
 def visualize_wallet_tree(G, main_wallet):
     G.remove_edges_from(nx.selfloop_edges(G))
@@ -120,7 +133,13 @@ def visualize_wallet_tree(G, main_wallet):
         return
 
     pos = nx.spring_layout(G, k=0.3, iterations=100)
-    node_sizes = [800 if node == main_wallet else 400 for node in G.nodes]
+
+    max_size = 50
+    min_size = 10
+    node_sizes = [
+        max(min_size, min(max_size, 800 * (G.degree(node) / 2))) for node in G.nodes
+    ]
+
     node_colors = [
         "red" if node == main_wallet else "blue" if main_wallet in G.neighbors(node) else "green"
         for node in G.nodes
@@ -131,50 +150,78 @@ def visualize_wallet_tree(G, main_wallet):
         for node in G.nodes
     }
 
-    edge_labels = {}
-    for edge in G.edges(data=True):
-        wallet1, wallet2, data = edge
-        inflow = data.get("inflow", 0)
-        outflow = data.get("outflow", 0)
-        edge_labels[(wallet1, wallet2)] = f"Inflow: {round(inflow,2)}\nOutflow: {round(outflow,2)}"
+    # Texte de survol pour les nœuds
+    hover_text = {}
+    for node in G.nodes:
+        if node == main_wallet:
+            hover_text[node] = f"{node}: Main Wallet"
+        else:
+            total_in = sum(G[u][v]["inflow"] for u in G.neighbors(node) if u != node)
+            total_out = sum(G[u][v]["outflow"] for u in G.neighbors(node) if u != node)
+            hover_text[node] = f"Address: {node}\nTotal In: {total_in}\nTotal Out: {total_out}"
 
-    plt.figure(figsize=(30, 30))
-    nx.draw(
-        G,
-        pos,
-        with_labels=True,
-        labels=labels,
-        node_size=node_sizes,
-        node_color=node_colors,
-        edge_color="gray",
-        font_size=10,
-        font_weight="bold",
+    # Texte de survol pour les arêtes
+    edge_x = []
+    edge_y = []
+    edge_text = []
+    for edge in G.edges():
+        x0, y0 = pos[edge[0]]
+        x1, y1 = pos[edge[1]]
+        edge_x.append(x0)
+        edge_x.append(x1)
+        edge_y.append(y0)
+        edge_y.append(y1)
+
+        inflow = G[edge[0]][edge[1]].get("inflow", 0)
+        outflow = G[edge[0]][edge[1]].get("outflow", 0)
+        edge_text.append(f"Inflow: {inflow}\nOutflow: {outflow}")
+
+    node_x = []
+    node_y = []
+    for node in G.nodes():
+        x, y = pos[node]
+        node_x.append(x)
+        node_y.append(y)
+
+    trace_edges = go.Scatter(
+        x=edge_x,
+        y=edge_y,
+        line=dict(width=0.5, color='gray'),
+        hoverinfo='text',
+        mode='lines',
+        text=edge_text
     )
 
-    # Ajouter des labels sur les arêtes
-    nx.draw_networkx_edge_labels(
-        G,
-        pos,
-        edge_labels=edge_labels,
-        font_size=8,
-        font_weight="bold",
-        verticalalignment="center",
-        horizontalalignment="center",
+    trace_nodes = go.Scatter(
+        x=node_x,
+        y=node_y,
+        mode='markers+text',
+        hoverinfo='text',
+        marker=dict(
+            showscale=True,
+            colorscale='YlGnBu',
+            size=node_sizes,
+            color=node_colors,
+            line_width=2
+        ),
+        text=[labels[node] for node in G.nodes()],
+        textposition="top center"
     )
 
-    plt.legend(
-        handles=[
-            plt.Line2D([0], [0], marker="o", color="w", markerfacecolor="red", markersize=10, label="Main Wallet"),
-            plt.Line2D([0], [0], marker="o", color="w", markerfacecolor="blue", markersize=10, label="Level 1 Wallet"),
-            plt.Line2D([0], [0], marker="o", color="w", markerfacecolor="green", markersize=10, label="Level 2 Wallet"),
-        ],
-        loc="best",
+    layout = go.Layout(
+        title=f"Wallet Network of {main_wallet}",
+        showlegend=False,
+        hovermode='closest',
+        margin=dict(b=0, t=0, l=0, r=0),
+        xaxis=dict(showgrid=False, zeroline=False),
+        yaxis=dict(showgrid=False, zeroline=False)
     )
-    plt.show()
+
+    fig = go.Figure(data=[trace_edges, trace_nodes], layout=layout)
+    fig.show()
 
 
 if __name__ == "__main__":
     load_bearer_token()
     main_wallet = input("Wallet to explore : ")
     wallet_graph = build_wallet_tree(main_wallet)
-    visualize_wallet_tree(wallet_graph, main_wallet)
