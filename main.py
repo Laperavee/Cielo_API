@@ -59,6 +59,7 @@ def renew_bearer_token():
                     save_bearer_token(BEARER_TOKEN)
                     HEADERS["Authorization"] = f"Bearer {BEARER_TOKEN}"
                     return BEARER_TOKEN
+                    print(BEARER_TOKEN)
     finally:
         driver.quit()
 
@@ -93,7 +94,6 @@ def build_wallet_tree(wallet):
     for rel in level1_wallets[:7]:
         wallet_n1 = rel["wallet"]
         G.add_node(wallet_n1)
-        # Ne pas inclure de poids ici, juste une arête sans poids
         G.add_edge(wallet, wallet_n1, inflow=rel["inflow"], outflow=rel["outflow"])
 
         level2_wallets = fetch_wallet_data(wallet_n1)
@@ -104,7 +104,6 @@ def build_wallet_tree(wallet):
             if wallet_n2 == wallet or wallet_n2 == wallet_n1:
                 continue
             G.add_node(wallet_n2)
-            # Ajouter une arête sans poids
             G.add_edge(wallet_n1, wallet_n2, inflow=rel2["inflow"], outflow=rel2["outflow"])
 
     return G
@@ -117,9 +116,12 @@ def visualize_wallet_tree(G, main_wallet):
 
     if main_wallet not in G:
         print(f"Erreur : le portefeuille principal {main_wallet} n'existe pas dans le graphe.")
-        return
 
-    pos = nx.spring_layout(G, k=0.3, iterations=100)
+    try:
+        pos = nx.kamada_kawai_layout(G)
+    except nx.NetworkXException:
+        print("spring")
+        pos = nx.spring_layout(G, k=0.8, iterations=200)
     node_sizes = [800 if node == main_wallet else 400 for node in G.nodes]
     node_colors = [
         "red" if node == main_wallet else "blue" if main_wallet in G.neighbors(node) else "green"
@@ -151,7 +153,6 @@ def visualize_wallet_tree(G, main_wallet):
         font_weight="bold",
     )
 
-    # Ajouter des labels sur les arêtes
     nx.draw_networkx_edge_labels(
         G,
         pos,
@@ -171,7 +172,6 @@ def visualize_wallet_tree(G, main_wallet):
         loc="best",
     )
     plt.show()
-
 
 if __name__ == "__main__":
     load_bearer_token()
